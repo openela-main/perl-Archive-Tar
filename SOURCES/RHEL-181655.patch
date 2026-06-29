@@ -1,0 +1,148 @@
+From e4fb3394d935b68ddb36cc6c543cbecd8e9875b5 Mon Sep 17 00:00:00 2001
+From: Stig Palmquist <stig@stig.io>
+Date: Thu, 21 May 2026 19:59:21 +0100
+Subject: [PATCH 1/2] Validate symlink and hardlink linkname in SECURE MODE
+
+Signed-off-by: Chris 'BinGOs' Williams <chris@bingosnet.co.uk>
+---
+ lib/Archive/Tar.pm     | 30 ++++++++++++++++++++++++++++++
+ t/04_resolved_issues.t |  2 ++
+ 2 files changed, 32 insertions(+)
+
+diff -u -r Archive-Tar-2.38.orig/lib/Archive/Tar.pm Archive-Tar-2.38/lib/Archive/Tar.pm
+--- Archive-Tar-2.38.orig/lib/Archive/Tar.pm	2026-06-16 09:57:09.877765373 +0200
++++ Archive-Tar-2.38/lib/Archive/Tar.pm	2026-06-16 09:58:24.481207202 +0200
+@@ -944,6 +944,19 @@
+     my $err;
+ 
+     if( $entry->is_symlink ) {
++        if( !$INSECURE_EXTRACT_MODE ) {
++            my $linkname = $entry->linkname;
++            if( File::Spec->file_name_is_absolute($linkname) ) {
++                $self->_error( qq[Symlink '] . $entry->full_path .
++                    qq[' has absolute target. Not extracting under SECURE EXTRACT MODE] );
++                return;
++            }
++            if( !defined _symlinks_resolver( $entry->full_path, $linkname, 1 ) ) {
++                $self->_error( qq[Symlink '] . $entry->full_path .
++                    qq[' target attempts traversal. Not extracting under SECURE EXTRACT MODE] );
++                return;
++            }
++        }
+         my $fail;
+         if( ON_UNIX ) {
+             symlink( $entry->linkname, $file ) or $fail++;
+@@ -957,6 +970,23 @@
+                 $entry->linkname .q[' failed] if $fail;
+ 
+     } elsif ( $entry->is_hardlink ) {
++        if( !$INSECURE_EXTRACT_MODE ) {
++            my $linkname = $entry->linkname;
++            if( File::Spec->file_name_is_absolute($linkname) ) {
++                $self->_error( qq[Hardlink '] . $entry->full_path .
++                    qq[' has absolute target '$linkname'. Not extracting ] .
++                    qq[under SECURE EXTRACT MODE: extraction itself chmods ] .
++                    qq[the shared inode.] );
++                return;
++            }
++            if( !defined _symlinks_resolver( $entry->full_path, $linkname, 1 ) ) {
++                $self->_error( qq[Hardlink '] . $entry->full_path .
++                    qq[' target '$linkname' attempts traversal. Not ] .
++                    qq[extracting under SECURE EXTRACT MODE: extraction ] .
++                    qq[itself chmods the shared inode.] );
++                return;
++            }
++        }
+         my $fail;
+         if( ON_UNIX ) {
+             link( $entry->linkname, $file ) or $fail++;
+@@ -1974,7 +2004,7 @@
+ }
+ 
+ sub _symlinks_resolver{
+-  my ($src, $trg) = @_;
++  my ($src, $trg, $strict) = @_;
+   my @src = split /[\/\\]/, $src;
+   my @trg = split /[\/\\]/, $trg;
+   pop @src; #strip out current object name
+@@ -1987,6 +2017,7 @@
+     next if $part eq '.'; #ignore current
+     if($part eq '..'){
+       #got to parent
++      return if $strict && !@src;
+       pop @src;
+     }
+     else{
+diff -u -r Archive-Tar-2.38.orig/t/04_resolved_issues.t Archive-Tar-2.38/t/04_resolved_issues.t
+--- Archive-Tar-2.38.orig/t/04_resolved_issues.t	2026-06-16 09:57:09.876335844 +0200
++++ Archive-Tar-2.38/t/04_resolved_issues.t	2026-06-16 09:58:24.480886620 +0200
+@@ -216,6 +216,7 @@
+ 		}
+ 
+     { #use case 1 - in memory extraction
++      local $Archive::Tar::INSECURE_EXTRACT_MODE=1;
+ 			my $t=Archive::Tar->new;
+ 			$t->read( $archname );
+ 			my $r = eval{ $t->extract };
+@@ -227,6 +228,7 @@
+ 
+ 		{ #use case 2 - iter extraction
+ 		  #$DB::single = 2;
++      local $Archive::Tar::INSECURE_EXTRACT_MODE=1;
+ 			my $next=Archive::Tar->iter( $archname, 1 );
+ 			my $failed = 0;
+ 			#use Data::Dumper;
+-- 
+2.52.0
+
+
+From 9ab74ba586a2328207da232f390968057a9a0ef6 Mon Sep 17 00:00:00 2001
+From: Stig Palmquist <git@stig.io>
+Date: Tue, 2 Jun 2026 16:09:03 +0200
+Subject: [PATCH 2/2] Allow `..` links in secure extract in parent path
+
+Assisted-by: OpenAI Codex
+Signed-off-by: Stig Palmquist <git@stig.io>
+---
+ lib/Archive/Tar.pm |  7 ++++---
+ t/90_symlink.t     | 26 ++++++++++++++++++++++++++
+ 2 files changed, 30 insertions(+), 3 deletions(-)
+
+diff -u -r Archive-Tar-2.38.orig/t/90_symlink.t Archive-Tar-2.38/t/90_symlink.t
+--- Archive-Tar-2.38.orig/t/90_symlink.t	2026-06-16 09:57:09.877008592 +0200
++++ Archive-Tar-2.38/t/90_symlink.t	2026-06-16 09:58:24.481459041 +0200
+@@ -26,6 +26,32 @@
+ 
+ use_ok( $Class );
+ 
++{
++    my $tar = $Class->new;
++    $tar->add_data( '.github/README.md', '',
++        { type => 2, linkname => '../README' } );
++
++    local $Archive::Tar::INSECURE_EXTRACT_MODE = 0;
++    ok( $tar->extract_file( '.github/README.md' ),
++        "Extracted symlink target that stays under cwd" );
++
++    unlink File::Spec->catfile( qw[.github README.md] );
++    rmtree( '.github' );
++}
++
++{
++    my $tar = $Class->new;
++    $tar->add_data( 'safe/link', '',
++        { type => 2, linkname => '../../outside' } );
++
++    local $Archive::Tar::INSECURE_EXTRACT_MODE = 0;
++    local $Archive::Tar::WARN = 0;
++    ok( !$tar->extract_file( 'safe/link' ),
++        "Refused symlink target escaping cwd" );
++
++    rmtree( 'safe' );
++}
++
+ {   while( my($file, $aref) = each %Map ) {
+ 
+         for my $mode ( 0, 1 ) {
+-- 
+2.52.0
