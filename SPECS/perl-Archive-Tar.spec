@@ -7,13 +7,16 @@
 
 Name:           perl-Archive-Tar
 Version:        2.30
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        A module for Perl manipulation of .tar files
 License:        GPL+ or Artistic
 URL:            https://metacpan.org/release/Archive-Tar
 Source0:        https://cpan.metacpan.org/authors/id/B/BI/BINGOS/Archive-Tar-%{version}.tar.gz
 # Remove annoying sleep after warnings in the build script
 Patch0:         Archive-Tar-2.02-Do-not-sleep-in-Makefile.PL.patch
+# https://github.com/jib/archive-tar-new/commit/17c873492a05eddc0de18c1485e0b2cccd5a9158
+# https://github.com/jib/archive-tar-new/commit/484f71ea0189ed46690f50dc7ee71d4b8bc0e70f
+Patch1:         RHEL-181654.patch
 BuildArch:      noarch
 # Most of the BRS are needed only for tests, compression support at run-time
 # is optional soft dependency.
@@ -88,6 +91,7 @@ will also support compressed or gzipped tar files.
 %prep
 %setup -q -n Archive-Tar-%{version}
 %patch0 -p1
+%patch1 -p1
 
 %build
 perl Makefile.PL INSTALLDIRS=vendor NO_PACKLIST=1
@@ -109,6 +113,11 @@ make test
 
 
 %changelog
+* Fri Jun 05 2026 RHEL Packaging Agent <redhat-ymir-agent@redhat.com> - 2.30-2
+- Fix CVE-2026-42496: validate symlink and hardlink targets in secure
+  extract mode
+- Resolves: RHEL-181654
+
 * Tue Jun 19 2018 Jitka Plesnikova <jplesnik@redhat.com> - 2.30-1
 - 2.30 bump
 
