@@ -1,0 +1,174 @@
+From 51d5f1cea3031b990d20fe80630b345d7f4fd6f2 Mon Sep 17 00:00:00 2001
+From: Stig Palmquist <stig@stig.io>
+Date: Thu, 21 May 2026 19:59:21 +0100
+Subject: [PATCH 1/2] Validate symlink and hardlink linkname in SECURE MODE
+
+Signed-off-by: Chris 'BinGOs' Williams <chris@bingosnet.co.uk>
+---
+ lib/Archive/Tar.pm     | 30 ++++++++++++++++++++++++++++++
+ t/04_resolved_issues.t |  2 ++
+ 2 files changed, 32 insertions(+)
+
+diff --git a/lib/Archive/Tar.pm b/lib/Archive/Tar.pm
+index 9131161..d1f1dd0 100644
+--- a/lib/Archive/Tar.pm
++++ b/lib/Archive/Tar.pm
+@@ -944,6 +944,19 @@ sub _make_special_file {
+     my $err;
+ 
+     if( $entry->is_symlink ) {
++        if( !$INSECURE_EXTRACT_MODE ) {
++            my $linkname = $entry->linkname;
++            if( File::Spec->file_name_is_absolute($linkname) ) {
++                $self->_error( qq[Symlink '] . $entry->full_path .
++                    qq[' has absolute target. Not extracting under SECURE EXTRACT MODE] );
++                return;
++            }
++            if( grep { $_ eq '..' } File::Spec->splitdir($linkname) ) {
++                $self->_error( qq[Symlink '] . $entry->full_path .
++                    qq[' target attempts traversal. Not extracting under SECURE EXTRACT MODE] );
++                return;
++            }
++        }
+         my $fail;
+         if( ON_UNIX ) {
+             symlink( $entry->linkname, $file ) or $fail++;
+@@ -957,6 +970,23 @@ sub _make_special_file {
+                 $entry->linkname .q[' failed] if $fail;
+ 
+     } elsif ( $entry->is_hardlink ) {
++        if( !$INSECURE_EXTRACT_MODE ) {
++            my $linkname = $entry->linkname;
++            if( File::Spec->file_name_is_absolute($linkname) ) {
++                $self->_error( qq[Hardlink '] . $entry->full_path .
++                    qq[' has absolute target '$linkname'. Not extracting ] .
++                    qq[under SECURE EXTRACT MODE: extraction itself chmods ] .
++                    qq[the shared inode.] );
++                return;
++            }
++            if( grep { $_ eq '..' } File::Spec->splitdir($linkname) ) {
++                $self->_error( qq[Hardlink '] . $entry->full_path .
++                    qq[' target '$linkname' attempts traversal. Not ] .
++                    qq[extracting under SECURE EXTRACT MODE: extraction ] .
++                    qq[itself chmods the shared inode.] );
++                return;
++            }
++        }
+         my $fail;
+         if( ON_UNIX ) {
+             link( $entry->linkname, $file ) or $fail++;
+diff --git a/t/04_resolved_issues.t b/t/04_resolved_issues.t
+index 4991d9a..c7dc0f8 100644
+--- a/t/04_resolved_issues.t
++++ b/t/04_resolved_issues.t
+@@ -216,6 +216,7 @@ use_ok( $FileClass );
+ 		}
+ 
+     { #use case 1 - in memory extraction
++      local $Archive::Tar::INSECURE_EXTRACT_MODE=1;
+ 			my $t=Archive::Tar->new;
+ 			$t->read( $archname );
+ 			my $r = eval{ $t->extract };
+@@ -227,6 +228,7 @@ use_ok( $FileClass );
+ 
+ 		{ #use case 2 - iter extraction
+ 		  #$DB::single = 2;
++      local $Archive::Tar::INSECURE_EXTRACT_MODE=1;
+ 			my $next=Archive::Tar->iter( $archname, 1 );
+ 			my $failed = 0;
+ 			#use Data::Dumper;
+-- 
+2.52.0
+
+
+From 6a8b4ec3afcd6620b95b7c0c969be7b2603b466a Mon Sep 17 00:00:00 2001
+From: Stig Palmquist <git@stig.io>
+Date: Tue, 2 Jun 2026 16:09:03 +0200
+Subject: [PATCH 2/2] Allow `..` links in secure extract in parent path
+
+Assisted-by: OpenAI Codex
+Signed-off-by: Stig Palmquist <git@stig.io>
+---
+ lib/Archive/Tar.pm |  7 ++++---
+ t/90_symlink.t     | 26 ++++++++++++++++++++++++++
+ 2 files changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/lib/Archive/Tar.pm b/lib/Archive/Tar.pm
+index d1f1dd0..7335d24 100644
+--- a/lib/Archive/Tar.pm
++++ b/lib/Archive/Tar.pm
+@@ -951,7 +951,7 @@ sub _make_special_file {
+                     qq[' has absolute target. Not extracting under SECURE EXTRACT MODE] );
+                 return;
+             }
+-            if( grep { $_ eq '..' } File::Spec->splitdir($linkname) ) {
++            if( !defined _symlinks_resolver( $entry->full_path, $linkname, 1 ) ) {
+                 $self->_error( qq[Symlink '] . $entry->full_path .
+                     qq[' target attempts traversal. Not extracting under SECURE EXTRACT MODE] );
+                 return;
+@@ -979,7 +979,7 @@ sub _make_special_file {
+                     qq[the shared inode.] );
+                 return;
+             }
+-            if( grep { $_ eq '..' } File::Spec->splitdir($linkname) ) {
++            if( !defined _symlinks_resolver( $entry->full_path, $linkname, 1 ) ) {
+                 $self->_error( qq[Hardlink '] . $entry->full_path .
+                     qq[' target '$linkname' attempts traversal. Not ] .
+                     qq[extracting under SECURE EXTRACT MODE: extraction ] .
+@@ -2004,7 +2004,7 @@ sub no_string_support {
+ }
+ 
+ sub _symlinks_resolver{
+-  my ($src, $trg) = @_;
++  my ($src, $trg, $strict) = @_;
+   my @src = split /[\/\\]/, $src;
+   my @trg = split /[\/\\]/, $trg;
+   pop @src; #strip out current object name
+@@ -2017,6 +2017,7 @@ sub _symlinks_resolver{
+     next if $part eq '.'; #ignore current
+     if($part eq '..'){
+       #got to parent
++      return if $strict && !@src;
+       pop @src;
+     }
+     else{
+diff --git a/t/90_symlink.t b/t/90_symlink.t
+index 3d7b406..db7a3bd 100644
+--- a/t/90_symlink.t
++++ b/t/90_symlink.t
+@@ -26,6 +26,32 @@ my %Map     = (
+ 
+ use_ok( $Class );
+ 
++{
++    my $tar = $Class->new;
++    $tar->add_data( '.github/README.md', '',
++        { type => 2, linkname => '../README' } );
++
++    local $Archive::Tar::INSECURE_EXTRACT_MODE = 0;
++    ok( $tar->extract_file( '.github/README.md' ),
++        "Extracted symlink target that stays under cwd" );
++
++    unlink File::Spec->catfile( qw[.github README.md] );
++    rmtree( '.github' );
++}
++
++{
++    my $tar = $Class->new;
++    $tar->add_data( 'safe/link', '',
++        { type => 2, linkname => '../../outside' } );
++
++    local $Archive::Tar::INSECURE_EXTRACT_MODE = 0;
++    local $Archive::Tar::WARN = 0;
++    ok( !$tar->extract_file( 'safe/link' ),
++        "Refused symlink target escaping cwd" );
++
++    rmtree( 'safe' );
++}
++
+ {   while( my($file, $aref) = each %Map ) {
+ 
+         for my $mode ( 0, 1 ) {
+-- 
+2.52.0
+
