@@ -7,7 +7,7 @@
 
 Name:           perl-Archive-Tar
 Version:        2.38
-Release:        6%{?dist}.1
+Release:        6%{?dist}.2
 Summary:        A module for Perl manipulation of .tar files
 License:        GPL+ or Artistic
 URL:            https://metacpan.org/release/Archive-Tar
@@ -17,6 +17,8 @@ Patch0:         Archive-Tar-2.02-Do-not-sleep-in-Makefile.PL.patch
 # https://github.com/jib/archive-tar-new/commit/17c873492a05eddc0de18c1485e0b2cccd5a9158
 # https://github.com/jib/archive-tar-new/commit/484f71ea0189ed46690f50dc7ee71d4b8bc0e70f
 Patch1:         RHEL-181662.patch
+# https://github.com/jib/archive-tar-new/commit/f9af01426038e29d9578825a0cd3626946ab08c7
+Patch2:         RHEL-191917.patch
 BuildArch:      noarch
 # Most of the BRS are needed only for tests, compression support at run-time
 # is optional soft dependency.
@@ -101,6 +103,7 @@ will also support compressed or gzipped tar files.
 %setup -q -n Archive-Tar-%{version}
 %patch0 -p1 -b .orig
 %patch1 -p1
+%patch2 -p1
 
 %build
 perl Makefile.PL INSTALLDIRS=vendor NO_PACKLIST=1 NO_PERLLOCAL=1
@@ -122,6 +125,11 @@ make test
 
 
 %changelog
+* Fri Jul 03 2026 RHEL Packaging Agent <redhat-ymir-agent@redhat.com> - 2.38-6.2
+- Fix CVE-2026-9538: add $MAX_FILE_SIZE cap for tar entry size during
+  read to prevent memory allocation DoS
+- Resolves: RHEL-191917
+
 * Fri Jun 05 2026 RHEL Packaging Agent <redhat-ymir-agent@redhat.com> - 2.38-6.1
 - Fix CVE-2026-42496: validate symlink and hardlink targets in secure
   extract mode
